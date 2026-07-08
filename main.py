@@ -33,16 +33,19 @@ async def health_check():
 
 @app.post("/send-email")
 async def send_email(request: EmailRequest):
+    if not api_key:
+        raise HTTPException(status_code=500, detail="RESEND_API_KEY not configured")
+    
     try:
         email = resend.Emails.send({
             "from": "onboarding@resend.dev",
-            "to": ["webitronsystems@gmail.com"],
+            "to": ["your-email@gmail.com"],  # ← Change this to your email
             "subject": f"New Message from {request.name}",
             "html": f"<strong>Name:</strong> {request.name}<br><strong>Email:</strong> {request.email}<br><strong>Message:</strong> {request.message}"
         })
-        return {"status": "success", "id": email.id}
+        return {"status": "success", "id": email["id"]}  # ✅ Fixed: email["id"] instead of email.id
     except Exception as e:
-        return {"status": "error", "detail": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
