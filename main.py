@@ -36,7 +36,7 @@ async def send_email(request: EmailRequest):
     try:
         email = resend.Emails.send({
             "from": "onboarding@resend.dev",
-            "to": ["your-email@gmail.com"],
+            "to": ["webitronsystems@gmail.com"],
             "subject": f"New Message from {request.name}",
             "html": f"<strong>Name:</strong> {request.name}<br><strong>Email:</strong> {request.email}<br><strong>Message:</strong> {request.message}"
         })
