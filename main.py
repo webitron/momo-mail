@@ -1,21 +1,55 @@
 import os
-import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import resend
 
 app = FastAPI()
 
+# ✅ ROBUST CORS CONFIGURATION
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",  # Vite dev server
+        "http://localhost:3000",  # Alternative dev port
+        "https://webitronsystems.com",  # Add your deployed Vue URL
+        "https://your-vue-app.netlify.app",  # Or Netlify
+        "*",  # Allow all origins (for testing only - remove in production)
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Allow all HTTP methods (GET, POST, etc.)
+    allow_headers=["*"],  # Allow all headers
+    expose_headers=["*"],
 )
 
-resend.api_key = os.environ.get("RESEND_API_KEY")
+# ✅ Add CORS headers to ALL responses, including errors
+@app.middleware("http")
+async def add_cors_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
+
+# ✅ Handle OPTIONS preflight requests explicitly
+@app.options("/{rest_of_path:path}")
+async def preflight_handler(rest_of_path: str):
+    return JSONResponse(
+        content={"message": "OK"},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
+# Load Resend API key
+api_key = os.environ.get("RESEND_API_KEY")
+if api_key:
+    resend.api_key = api_key
+else:
+    print("⚠️ WARNING: RESEND_API_KEY not set!")
 
 class EmailRequest(BaseModel):
     name: str
@@ -24,12 +58,7 @@ class EmailRequest(BaseModel):
 
 @app.get("/")
 async def health_check():
-    port = os.environ.get("PORT", "8000")
-    return {
-        "status": "ok",
-        "message": f"Email API running on port {port}",
-        "debug_port": port
-    }
+    return {"status": "ok", "message": "Email API running"}
 
 @app.post("/send-email")
 async def send_email(request: EmailRequest):
@@ -39,11 +68,11 @@ async def send_email(request: EmailRequest):
     try:
         email = resend.Emails.send({
             "from": "onboarding@resend.dev",
-            "to": ["your-email@gmail.com"],  # ← Change this to your email
+            "to": ["webitronsystems@gmail.com"],  # ← Change to your email
             "subject": f"New Message from {request.name}",
             "html": f"<strong>Name:</strong> {request.name}<br><strong>Email:</strong> {request.email}<br><strong>Message:</strong> {request.message}"
         })
-        return {"status": "success", "id": email["id"]}  # ✅ Fixed: email["id"] instead of email.id
+        return {"status": "success", "id": email["id"]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
