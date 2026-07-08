@@ -14,7 +14,7 @@ app = FastAPI()
 # Replace 'https://your-vue-app.com' with your actual frontend URL or '*' for testing
 origins = [
     "http://localhost:5173",  # Vite default port
-    "https://your-vue-app.railway.app", 
+    "https://momo-mail-production.up.railway.app", 
 ]
 
 app.add_middleware(
