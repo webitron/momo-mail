@@ -20,6 +20,7 @@ app.add_middleware(
 api_key = os.environ.get("RESEND_API_KEY")
 if api_key:
     resend.api_key = api_key
+    print("✅ RESEND_API_KEY loaded")
 
 s3_client = boto3.client(
     's3',
@@ -32,6 +33,16 @@ s3_client = boto3.client(
 BUCKET_NAME = os.environ.get("BUCKET_NAME")
 DEFAULT_PDF_KEY = os.environ.get("DEFAULT_PDF_KEY", "Ict_mastery_for_jhs_1-3_bece_success.pdf")
 
+# ✅ NEW: Configurable email sender (set these in Railway Variables)
+# After verifying your domain, change these to:
+# EMAIL_FROM_NAME = "BookHaven"
+# EMAIL_FROM_ADDRESS = "noreply@webitronsystems.com"
+EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "BookHaven")
+EMAIL_FROM_ADDRESS = os.environ.get("EMAIL_FROM_ADDRESS", "onboarding@resend.dev")
+EMAIL_REPLY_TO = os.environ.get("EMAIL_REPLY_TO", "webitronsystems@gmail.com")
+
+print(f"📧 Email sender: {EMAIL_FROM_NAME} <{EMAIL_FROM_ADDRESS}>")
+
 # ✅ Check if email was already sent for this reference
 def is_email_already_sent(reference):
     try:
@@ -39,7 +50,7 @@ def is_email_already_sent(reference):
         s3_client.head_object(Bucket=BUCKET_NAME, Key=flag_key)
         return True
     except ClientError as e:
-        if e.response['Error']['Code'] == '404':
+        if e.response['Error']['Code'] in ['404', 'NoSuchKey', 'NotFound']:
             return False
         raise
 
@@ -72,17 +83,28 @@ def get_pdf_from_bucket(file_key):
 
 @app.get("/")
 async def health_check():
-    return {"status": "ok", "message": "Email API running"}
+    return {
+        "status": "ok",
+        "message": "Email API running",
+        "bucket": BUCKET_NAME,
+        "default_pdf": DEFAULT_PDF_KEY,
+        "sender": f"{EMAIL_FROM_NAME} <{EMAIL_FROM_ADDRESS}>"
+    }
 
-# ✅ UPDATED: Now checks for duplicate sends
+# ✅ UPDATED: Uses configured sender address
 @app.post("/send-email")
 async def send_email(
     name: str = Form(...),
     email: str = Form(...),
     message: str = Form(...),
-    reference: str = Form(None)  # ✅ Added reference tracking
+    reference: str = Form(None)
 ):
-    print(f"📧 Received email request for: {email}, reference: {reference}")
+    print(f"\n{'='*50}")
+    print(f"📧 Received email request")
+    print(f"   To: {email}")
+    print(f"   Reference: {reference or 'NOT PROVIDED'}")
+    print(f"   From: {EMAIL_FROM_NAME} <{EMAIL_FROM_ADDRESS}>")
+    print(f"{'='*50}\n")
     
     if not api_key:
         raise HTTPException(status_code=500, detail="RESEND_API_KEY not configured")
@@ -99,10 +121,10 @@ async def send_email(
                 }
         except Exception as e:
             print(f"⚠️ Error checking sent status: {str(e)}")
-            # Continue anyway - don't block the email
     
     try:
         pdf_content, content_type = get_pdf_from_bucket(DEFAULT_PDF_KEY)
+        print(f"✅ PDF fetched: {len(pdf_content)} bytes")
         
         attachments = [{
             "filename": DEFAULT_PDF_KEY.split('/')[-1],
@@ -110,15 +132,19 @@ async def send_email(
             "content_type": content_type,
         }]
         
+        # ✅ FIXED: Use configured sender with friendly name
         params = {
-            "from": "onboarding@resend.dev",
+            "from": f"{EMAIL_FROM_NAME} <{EMAIL_FROM_ADDRESS}>",
+            "reply_to": EMAIL_REPLY_TO,
             "to": [email],
-            "subject": "Payment Receipt - BookHaven",
+            "subject": f"🎉 Payment Receipt - BookHaven",
             "html": message,
             "attachments": attachments
         }
         
+        print(f"📧 Sending via Resend to: {email}")
         email_response = resend.Emails.send(params)
+        print(f"✅ Email sent: {email_response}")
         
         # ✅ MARK: Record that this reference was emailed
         if reference:
@@ -131,10 +157,18 @@ async def send_email(
         }
         
     except Exception as e:
-        print(f"❌ Email sending error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        error_msg = str(e)
+        print(f"❌ Email sending error: {error_msg}")
+        
+        # ✅ Helpful error message for domain verification issue
+        if "verify a domain" in error_msg.lower():
+            raise HTTPException(
+                status_code=500,
+                detail="Domain not verified. Please verify your domain at resend.com/domains and set EMAIL_FROM_ADDRESS environment variable."
+            )
+        
+        raise HTTPException(status_code=500, detail=error_msg)
 
-# ✅ Optional: Endpoint to check if email was sent
 @app.get("/check-sent/{reference}")
 async def check_sent(reference: str):
     try:
@@ -149,4 +183,5 @@ async def check_sent(reference: str):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
+    print(f"🚀 Starting server on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
