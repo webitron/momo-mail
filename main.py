@@ -30,7 +30,7 @@ s3_client = boto3.client(
 )
 
 BUCKET_NAME = os.environ.get("BUCKET_NAME")
-DEFAULT_PDF_KEY = os.environ.get("DEFAULT_PDF_KEY", "receipt.pdf")
+DEFAULT_PDF_KEY = os.environ.get("DEFAULT_PDF_KEY", "Ict_mastery_for_jhs_1-3_bece_success.pdf")
 
 # ✅ Check if email was already sent for this reference
 def is_email_already_sent(reference):
