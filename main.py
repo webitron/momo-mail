@@ -1,5 +1,6 @@
 import os
 import base64
+from datetime import datetime
 from fastapi import FastAPI, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 import resend
@@ -8,7 +9,6 @@ from botocore.exceptions import ClientError
 
 app = FastAPI()
 
-# ✅ CORS Configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,15 +17,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load Resend API key
 api_key = os.environ.get("RESEND_API_KEY")
 if api_key:
     resend.api_key = api_key
-    print("✅ RESEND_API_KEY loaded successfully")
-else:
-    print("⚠️ WARNING: RESEND_API_KEY not set!")
 
-# ✅ Initialize Railway Bucket (S3-compatible)
 s3_client = boto3.client(
     's3',
     endpoint_url=os.environ.get("BUCKET_ENDPOINT"),
@@ -35,114 +30,82 @@ s3_client = boto3.client(
 )
 
 BUCKET_NAME = os.environ.get("BUCKET_NAME")
-DEFAULT_PDF_KEY = os.environ.get("DEFAULT_PDF_KEY", "Ict_mastery_for_jhs_1-3_bece_success.pdf")  # Path to PDF in bucket
+DEFAULT_PDF_KEY = os.environ.get("DEFAULT_PDF_KEY", "receipt.pdf")
+
+# ✅ Check if email was already sent for this reference
+def is_email_already_sent(reference):
+    try:
+        flag_key = f"sent_flags/{reference}.txt"
+        s3_client.head_object(Bucket=BUCKET_NAME, Key=flag_key)
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] == '404':
+            return False
+        raise
+
+# ✅ Mark email as sent
+def mark_email_as_sent(reference, email):
+    try:
+        flag_key = f"sent_flags/{reference}.txt"
+        flag_content = f"""Reference: {reference}
+Email: {email}
+Sent At: {datetime.utcnow().isoformat()}
+Status: SUCCESS"""
+        
+        s3_client.put_object(
+            Bucket=BUCKET_NAME,
+            Key=flag_key,
+            Body=flag_content.encode('utf-8'),
+            ContentType='text/plain'
+        )
+        print(f"✅ Marked reference '{reference}' as sent")
+    except Exception as e:
+        print(f"⚠️ Failed to mark as sent: {str(e)}")
+
+# ✅ Fetch PDF from bucket
+def get_pdf_from_bucket(file_key):
+    try:
+        response = s3_client.get_object(Bucket=BUCKET_NAME, Key=file_key)
+        return response['Body'].read(), response.get('ContentType', 'application/pdf')
+    except ClientError as e:
+        raise HTTPException(status_code=404, detail=f"File not found: {file_key}")
 
 @app.get("/")
 async def health_check():
-    return {
-        "status": "ok", 
-        "message": "Email API running",
-        "bucket_configured": bool(BUCKET_NAME and s3_client),
-        "default_pdf": DEFAULT_PDF_KEY
-    }
+    return {"status": "ok", "message": "Email API running"}
 
-# ✅ Fetch PDF from Railway Bucket
-def get_pdf_from_bucket(file_key):
-    try:
-        print(f"📦 Fetching '{file_key}' from bucket '{BUCKET_NAME}'...")
-        
-        response = s3_client.get_object(
-            Bucket=BUCKET_NAME,
-            Key=file_key
-        )
-        
-        file_content = response['Body'].read()
-        content_type = response.get('ContentType', 'application/pdf')
-        
-        print(f"✅ PDF fetched successfully: {len(file_content)} bytes")
-        return file_content, content_type
-        
-    except ClientError as e:
-        error_code = e.response['Error']['Code']
-        if error_code == 'NoSuchKey':
-            print(f"❌ File not found in bucket: {file_key}")
-            raise HTTPException(status_code=404, detail=f"File '{file_key}' not found in bucket")
-        else:
-            print(f"❌ Bucket error: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Bucket error: {str(e)}")
-    except Exception as e:
-        print(f"❌ Unexpected error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ✅ Send email with default PDF attachment from bucket
+# ✅ UPDATED: Now checks for duplicate sends
 @app.post("/send-email")
 async def send_email(
     name: str = Form(...),
     email: str = Form(...),
-    message: str = Form(...)
+    message: str = Form(...),
+    reference: str = Form(None)  # ✅ Added reference tracking
 ):
-    print(f"📧 Received email request for: {email}")
+    print(f"📧 Received email request for: {email}, reference: {reference}")
     
     if not api_key:
         raise HTTPException(status_code=500, detail="RESEND_API_KEY not configured")
     
-    if not BUCKET_NAME:
-        raise HTTPException(status_code=500, detail="BUCKET_NAME not configured")
+    # ✅ CHECK: Has this reference already been emailed?
+    if reference:
+        try:
+            if is_email_already_sent(reference):
+                print(f"⚠️ Email already sent for reference: {reference}")
+                return {
+                    "status": "already_sent",
+                    "message": "Email was already sent for this reference",
+                    "reference": reference
+                }
+        except Exception as e:
+            print(f"⚠️ Error checking sent status: {str(e)}")
+            # Continue anyway - don't block the email
     
     try:
-        # ✅ Fetch PDF from Railway Bucket
         pdf_content, content_type = get_pdf_from_bucket(DEFAULT_PDF_KEY)
         
-        # ✅ Prepare attachment
         attachments = [{
-            "filename": DEFAULT_PDF_KEY.split('/')[-1],  # Extract filename from path
-            "content": base64.b64encode(pdf_content).decode("utf-8"),
-            "content_type": content_type,
-        }]
-        
-        # ✅ Build email params
-        params = {
-            "from": "onboarding@resend.dev",
-            "to": [email],
-            "subject": "Payment Receipt - BookHaven",
-            "html": message,
-            "attachments": attachments  # Always attach the PDF
-        }
-        
-        print(f"📧 Sending email via Resend to: {email}")
-        email_response = resend.Emails.send(params)
-        print(f"✅ Email sent successfully: {email_response}")
-        
-        return {
-            "status": "success",
-            "id": email_response["id"],
-            "attachment": DEFAULT_PDF_KEY
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ Email sending error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ✅ Optional: Send email with custom PDF from bucket
-@app.post("/send-email-with-pdf")
-async def send_email_with_pdf(
-    name: str = Form(...),
-    email: str = Form(...),
-    message: str = Form(...),
-    pdf_key: str = Form(...)  # Path to PDF in bucket
-):
-    print(f"📧 Received email request for: {email} with custom PDF: {pdf_key}")
-    
-    if not api_key:
-        raise HTTPException(status_code=500, detail="RESEND_API_KEY not configured")
-    
-    try:
-        pdf_content, content_type = get_pdf_from_bucket(pdf_key)
-        
-        attachments = [{
-            "filename": pdf_key.split('/')[-1],
+            "filename": DEFAULT_PDF_KEY.split('/')[-1],
             "content": base64.b64encode(pdf_content).decode("utf-8"),
             "content_type": content_type,
         }]
@@ -157,17 +120,33 @@ async def send_email_with_pdf(
         
         email_response = resend.Emails.send(params)
         
+        # ✅ MARK: Record that this reference was emailed
+        if reference:
+            mark_email_as_sent(reference, email)
+        
         return {
             "status": "success",
             "id": email_response["id"],
-            "attachment": pdf_key
+            "reference": reference
         }
         
+    except Exception as e:
+        print(f"❌ Email sending error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ✅ Optional: Endpoint to check if email was sent
+@app.get("/check-sent/{reference}")
+async def check_sent(reference: str):
+    try:
+        already_sent = is_email_already_sent(reference)
+        return {
+            "reference": reference,
+            "already_sent": already_sent
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    print(f"🚀 Starting server on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
